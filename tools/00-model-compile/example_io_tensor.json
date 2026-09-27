@@ -1,0 +1,36 @@
+[
+  {
+    "name": "x",
+    "shape": [
+      1,
+      200,
+      560
+    ],
+    "dtype": "float32",
+    "type": "INPUT"
+  },
+  {
+    "name": "x_length",
+    "shape": [
+      1
+    ],
+    "dtype": "int32",
+    "type": "INPUT"
+  },
+  {
+    "name": "language",
+    "shape": [
+      1
+    ],
+    "dtype": "int32",
+    "type": "INPUT"
+  },
+  {
+    "name": "text_norm",
+    "shape": [
+      1
+    ],
+    "dtype": "int32",
+    "type": "INPUT"
+  }
+]

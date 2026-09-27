@@ -1,0 +1,12 @@
+[Unit]
+Description=NPU service smoke self-check (one-shot)
+Documentation=file:/opt/npu/README.txt
+After=npusvc.service
+
+[Service]
+Type=oneshot
+Environment=NPU_SOCK=/run/npu/npu.sock
+Environment=NPU_SMOKE_IMG=/opt/npu/testdata/20210828122250_3b289.jpg
+# 冒烟：服务不在（未启动/已停）时直接失败，便于发现服务异常退出
+ExecStart=/bin/bash /opt/npu/bin/svc_smoke.sh
+# 退出码语义见 svc_smoke.sh：0=健康 1=服务没起 2=推理失败 3=数值不对

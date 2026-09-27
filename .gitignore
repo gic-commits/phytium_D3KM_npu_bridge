@@ -1,0 +1,11 @@
+._*
+.DS_Store
+*.o
+*.ko
+*.so
+*.deb
+*.tar
+*.tar.gz
+*.params
+*.onnx
+build/

@@ -1,0 +1,43 @@
+[Unit]
+Description=NPU inference service (pool supervisor + per-model workers)
+Documentation=file:/opt/npu/README.txt
+# 依赖：内核模块 phytium_npu / phytium_npu_platform 已加载、/dev/npu0 存在
+ConditionPathExists=/dev/npu0
+After=local-fs.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/npu
+Environment=LD_LIBRARY_PATH=/usr/local/lib
+Environment=NPSVC_MODELS=/opt/npu/model/
+
+# ★ 开机时驱动会以 sim=1（模拟模式，不碰硬件）自动加载 ⇒ 启动前切成真硬件。
+#   注意：vha_sim_mode 是运行时可写的模块参数，无需 rmmod/insmod。
+ExecStartPre=/bin/sh -c 'echo 0 > /sys/module/phytium_npu/parameters/vha_sim_mode'
+
+RuntimeDirectory=npu
+RuntimeDirectoryMode=0775
+ExecStart=/opt/npu/bin/npusvc_pool \
+    --sock /run/npu/npu.sock \
+    --models /opt/npu/model/ \
+    --worker /opt/npu/bin/npuworker \
+    --worker-log /var/log/npuworker.log \
+    --timeout-ms 20000 \
+    --worker-timeout-ms 30000 \
+    --queue 64 \
+    --idle-kill-ms 120000
+# ↑ --idle-kill-ms：空闲 2 分钟就回收 worker（**把 /dev/npu0 让出来**，便于人工/其他工具临时用）；
+#   需要常驻加速的部署可设为 0（永不回收）。supervisor 本身不占设备。
+
+# 收尾：确保不残留 worker 占用设备
+ExecStopPost=/bin/sh -c 'pkill -x npuworker || true'
+Restart=on-failure
+RestartSec=3
+# 崩溃时保留现场（core），便于定位
+LimitCORE=infinity
+# 只允许一个实例（NPU 单实例；多实例必然互抢）
+KillMode=control-group
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

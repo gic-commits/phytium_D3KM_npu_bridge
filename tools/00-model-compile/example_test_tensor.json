@@ -1,0 +1,30 @@
+[
+  {
+    "name": "x",
+    "image_path": "/out/calib/x.bin",
+    "extension": "f32",
+    "raw_scale": 1,
+    "input_scale": 1
+  },
+  {
+    "name": "x_length",
+    "image_path": "/out/calib/xlen.bin",
+    "extension": "data",
+    "raw_scale": 1,
+    "input_scale": 1
+  },
+  {
+    "name": "language",
+    "image_path": "/out/calib/lang.bin",
+    "extension": "data",
+    "raw_scale": 1,
+    "input_scale": 1
+  },
+  {
+    "name": "text_norm",
+    "image_path": "/out/calib/tn.bin",
+    "extension": "data",
+    "raw_scale": 1,
+    "input_scale": 1
+  }
+]

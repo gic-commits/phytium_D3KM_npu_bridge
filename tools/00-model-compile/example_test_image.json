@@ -1,0 +1,14 @@
+[
+  {
+    "name": "input",
+    "image_path": "/out/imgs",
+    "mean": [
+      0,
+      0,
+      0
+    ],
+    "extension": "jpg",
+    "raw_scale": 255,
+    "input_scale": 1
+  }
+]

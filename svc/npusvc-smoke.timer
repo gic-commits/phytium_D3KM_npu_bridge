@@ -1,0 +1,13 @@
+[Unit]
+Description=Run NPU smoke self-check every 15 minutes
+Documentation=file:/opt/npu/README.txt
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+Unit=npusvc-smoke.service
+
+[Install]
+WantedBy=timers.target
