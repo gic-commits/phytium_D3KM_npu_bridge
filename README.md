@@ -27,6 +27,18 @@
 | 服务验收（六项全通过） | 跨模型轮换 / 同模型连跑 / **并发两客户端** / **worker 超时击杀** / **外部击杀自愈** / **systemd 部署 + 冒烟自检** |
 
 
+#### 借壳路线进展（2026-10-02 深夜）
+
+| 项 | 结果 |
+|---|---|
+| **CMA 泄漏** | **已修好**：连跑 3 次 `sensevoice` 加载，`CmaFree` 只降一次（657996 → 193208 kB）后**纹丝不动**（修复前单调下降至分配失败） |
+| 澄清 | 重载后 `CmaFree` 不回到满值（~666 MB）**不是我们的泄漏** —— `rmmod` 后仍停在 666 MB，占用者是 `kytensor`(2 GB RSS) 与 Vivante GPU 驱动（`gckOS_AllocateMemory`）⇒ **属环境基线** |
+| 当前卡点成因 | 编译用的量化配置 `-mc in32out32_d16_w16b16.json`（**输入输出 32bit、数据/系数 16bit**）⇒ 段 IO 声明与运行时申请**差 2 倍**（`913920 / 457776 ≈ 2`） |
+| 包结构 | 141 个 NPU 段 + 421 个 CPU 段间拷贝节点（`fname_to_nid` 772 项） |
+| 重编前提 | 设备**已有 aarch64 `libnpucompiler.so`**（11.6 MB、not stripped、13,670 符号、依赖全为标准库）⇒ 具备原生编译能力；**缺 `model_build` CLI 前端**（只在 2.7 GB 的 x86 工具链镜像里） |
+
+详见 [`docs/13`](docs/13-cma-fixed-and-blocker.md)。
+
 ### 借壳路线（2026-10-02 夜）：非 CNN 模型上 NPU 的另一条路
 
 `docs/10` 否定的只是"**ORT EP 自己编译**"这条路（EP 算子表只认 CNN，3803 节点只收 1 个）。
@@ -88,6 +100,7 @@
 | [`docs/10-ort-ep-and-response-fix.md`](docs/10-ort-ep-and-response-fix.md) | **定制 ONNX Runtime（`PHYNPUExecutionProvider`）路径**：响应 task-id 回填这个真根因（一行修复治好"池路径 -3"与"ORT 5s 超时"）、**为什么 ORT EP 加速 SenseVoice 不成立**、VERBOSE 日志与缓冲清单对照 | 想用 `session.run()` 直接跑 ONNX 的人（**先读这篇的 §二**） |
 | [`docs/11-methodology-and-tools.md`](docs/11-methodology-and-tools.md) | **排查方法论与工具**：断言纪律（构建校验）、取证纪律（清日志缓冲）、回归排查、判据设计、反汇编定位法、症状→根因速查 | **所有人都该先读这篇** |
 | [`docs/12-sensevoice-borrow-shell.md`](docs/12-sensevoice-borrow-shell.md) | **SenseVoice 上 NPU 的"借壳"路线**：用离线工具链编包 + 池路径加载（绕开 ORT EP 的算子表限制）；实测切成 **1600+ 个 NPU 段**；修掉"释放不真释放"导致的 CMA 泄漏；当前卡点（段 IO 声明尺寸 vs 库申请尺寸）与数字关系 | 想让非 CNN 模型（ASR/Transformer）上 NPU 的人 |
+| [`docs/13-cma-fixed-and-blocker.md`](docs/13-cma-fixed-and-blocker.md) | **CMA 泄漏已修（含"不是我们占的"这一澄清）** + 当前卡点的精确成因（`in32out32_d16_w16b16` 量化配置导致段 IO 与运行时申请 2 倍口径差）+ 重编所需工具链现状（设备已有 aarch64 `libnpucompiler.so`，缺 CLI 前端） | 继续推进借壳路线的人 |
 | [`UPLOAD-MANIFEST.md`](UPLOAD-MANIFEST.md) | 本仓库包含什么、**不含什么、去哪拿** | 所有人 |
 | [`NOTICE.md`](NOTICE.md) | 第三方材料与许可证边界 | 分发前必看 |
 
