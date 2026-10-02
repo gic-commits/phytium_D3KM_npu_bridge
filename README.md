@@ -27,6 +27,21 @@
 | 服务验收（六项全通过） | 跨模型轮换 / 同模型连跑 / **并发两客户端** / **worker 超时击杀** / **外部击杀自愈** / **systemd 部署 + 冒烟自检** |
 
 
+### 借壳路线（2026-10-02 夜）：非 CNN 模型上 NPU 的另一条路
+
+`docs/10` 否定的只是"**ORT EP 自己编译**"这条路（EP 算子表只认 CNN，3803 节点只收 1 个）。
+**厂商离线工具链不受该限制** —— 实测 SenseVoice 被切成 **1600+ 个 NPU 段**并成功编出包，
+用**池路径（`npu_client`）加载**即可（"借壳"）。
+
+| 项 | 结果 |
+|---|---|
+| 路线可行性 | `sensevoice` 包（589 MB 四件套）**`load -> True`（10.6 s）**，图与 IO 均被正确解析 |
+| 修掉的真 bug | **`VHA_RELEASE_PG5/PG8` 只清 `mapped` 标志、不真释放** ⇒ 池 worker 长驻、反复 `init_graph` 却从不关设备 ⇒ **732 次分配 0 次回收**，CMA 被吃干（1 GB → 665 MB）。新增 `vha_free_one()` 真释放后恢复 |
+| 当前卡点 | `Incorrect input buffer, id: 6 Segment: 1. Buffer ID: 6 exceeds its capacity. It is of size: 457776, but segment IO declares size: 913920` —— 段 IO 声明尺寸与库申请尺寸口径不一致（候选成因：编译时 `io.json` 声明了 4 个输入，包里只保留 1 个 ⇒ 缓冲编号错位） |
+| 订正 | 此前"离线工具链只支持单调 2 段"的结论**不成立**（实测 1600+ 段） |
+
+详见 [`docs/12`](docs/12-sensevoice-borrow-shell.md)。
+
 ### 最新进展（2026-10-02）：ORT EP 路径打通 + 一个不可行结论
 
 | 项 | 结果 |
@@ -72,6 +87,7 @@
 | [`docs/09-model-compile-pipeline.md`](docs/09-model-compile-pipeline.md) | **用自己的模型编出可部署包**（`model_build`/`npu_compiler`）：两份配置文件的 schema、必需修复、错误对照表 | 想跑厂商预编译包之外的模型的人（**ASR/自定义模型必读**） |
 | [`docs/10-ort-ep-and-response-fix.md`](docs/10-ort-ep-and-response-fix.md) | **定制 ONNX Runtime（`PHYNPUExecutionProvider`）路径**：响应 task-id 回填这个真根因（一行修复治好"池路径 -3"与"ORT 5s 超时"）、**为什么 ORT EP 加速 SenseVoice 不成立**、VERBOSE 日志与缓冲清单对照 | 想用 `session.run()` 直接跑 ONNX 的人（**先读这篇的 §二**） |
 | [`docs/11-methodology-and-tools.md`](docs/11-methodology-and-tools.md) | **排查方法论与工具**：断言纪律（构建校验）、取证纪律（清日志缓冲）、回归排查、判据设计、反汇编定位法、症状→根因速查 | **所有人都该先读这篇** |
+| [`docs/12-sensevoice-borrow-shell.md`](docs/12-sensevoice-borrow-shell.md) | **SenseVoice 上 NPU 的"借壳"路线**：用离线工具链编包 + 池路径加载（绕开 ORT EP 的算子表限制）；实测切成 **1600+ 个 NPU 段**；修掉"释放不真释放"导致的 CMA 泄漏；当前卡点（段 IO 声明尺寸 vs 库申请尺寸）与数字关系 | 想让非 CNN 模型（ASR/Transformer）上 NPU 的人 |
 | [`UPLOAD-MANIFEST.md`](UPLOAD-MANIFEST.md) | 本仓库包含什么、**不含什么、去哪拿** | 所有人 |
 | [`NOTICE.md`](NOTICE.md) | 第三方材料与许可证边界 | 分发前必看 |
 
@@ -79,6 +95,7 @@
 - `src/` — 我们对开源内核驱动的修改（**VHA 兼容桥接**主体，GPL-2.0）
 - `svc/` — 推理服务（单进程版 + **进程池版**）、客户端库/示例、验收脚本、systemd unit
 - `tools/00-model-compile/` — **自编模型包模板**（容器内编译脚本 + io.json/test.json 示例 + 校准数据生成器）
+- `tools/borrow-shell/` — **借壳路线**配套脚本：池路径加载 `sv_pool.py`、包结构解析 `pkg_probe.sh`/`svpkg.sh`、CMA 泄漏诊断 `leak_diag.sh`/`mem_diag.sh`、真释放补丁 `apply_realfree.py`
 - `tools/ort-ep/` — **定制 ORT 路径**配套脚本：模型二分 `model_bisect.py`、VERBOSE 取证 `sv_verbose.py`、验收 `verify_npu.py`/`ten_runs.py`、响应回填补丁 `apply_respfix.py`
 - `tools/` — 自建最小运行器 `npu_det`/`npu_gen`、页级缓冲读取 `npu_peek`（破案关键工具）、
   寄存器快照 `regsnap.py`、解码器 `decode_y5.py`/`decode_scrfd.py`

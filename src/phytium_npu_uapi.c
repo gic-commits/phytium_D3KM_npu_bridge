@@ -213,6 +213,33 @@ static struct vha_alloc_entry *vha_find_by_page(unsigned long page)
 	return NULL;
 }
 
+/* HERMES-REALFREE: 真正释放单条分配。
+ * 原 PG5/PG8 只把 e->mapped 清 0，既不 dma_free_coherent 也不摘链
+ * => 库以为释放了，驱动侧内存一直占着；而 vha_free_allocs 只在
+ * close() 时调用，池的 worker 是长驻进程 => 732 次分配 0 次回收，CMA 被吃干。 */
+static void vha_free_one(struct phytium_npu_dev *npu, unsigned long page_idx)
+{
+	struct vha_alloc_entry *e, *tmp;
+
+	mutex_lock(&vha_alloc_mutex);
+	list_for_each_entry_safe(e, tmp, &vha_allocs, list) {
+		if (e->start_page != page_idx)
+			continue;
+		list_del(&e->list);
+		if (e->dma_handle)
+			dma_free_coherent(e->npu->dev, PAGE_ALIGN(e->size),
+					  e->kvaddr, e->dma_handle);
+		else if (e->kvaddr)
+			vfree(e->kvaddr);
+		dev_info(npu->dev,
+			 "[VHA-REALFREE] page=%lu size=%zu freed (ord=%d)\n",
+			 page_idx, e->size, e->alloc_ord);
+		kfree(e);
+		break;
+	}
+	mutex_unlock(&vha_alloc_mutex);
+}
+
 static void vha_free_allocs(void)
 {
 	struct vha_alloc_entry *e, *tmp;
@@ -1460,12 +1487,10 @@ static long phytium_npu_ioctl(struct file *file, unsigned int cmd, unsigned long
 			break;
 		}
 		mutex_lock(&vha_alloc_mutex);
-		e = vha_find_by_page(idx);
-		if (e)
-			e->mapped = 0;
 		mutex_unlock(&vha_alloc_mutex);
-		dev_info(npu->dev, "[VHA-REL5] page_idx=%u %s\n",
-			 idx, e ? "released" : "absent(ok)");
+		/* HERMES-REALFREE: 真正释放（原来只清 mapped 标志） */
+		vha_free_one(npu, idx);
+		dev_info(npu->dev, "[VHA-REL5] page_idx=%u released(real)\n", idx);
 		retval = 0;
 		break;
 	}
@@ -1481,12 +1506,10 @@ static long phytium_npu_ioctl(struct file *file, unsigned int cmd, unsigned long
 		}
 		idx = (u32)raw;
 		mutex_lock(&vha_alloc_mutex);
-		e = vha_find_by_page(idx);
-		if (e)
-			e->mapped = 0;
 		mutex_unlock(&vha_alloc_mutex);
-		dev_info(npu->dev, "[VHA-REL8] page_idx=%u %s\n",
-			 idx, e ? "released" : "absent(ok)");
+		/* HERMES-REALFREE: 真正释放（原来只清 mapped 标志） */
+		vha_free_one(npu, idx);
+		dev_info(npu->dev, "[VHA-REL8] page_idx=%u released(real)\n", idx);
 		retval = 0;
 		break;
 	}
