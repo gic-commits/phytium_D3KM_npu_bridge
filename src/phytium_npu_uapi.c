@@ -328,6 +328,16 @@ static ssize_t phytium_npu_read(struct file *file, char __user *buf, size_t len,
 		ret_len = rsp->rsp_size;
 	else
 		ret_len = len;
+	/* HERMES-RESP-FIX: 库 libnpusession 的 GetVhaResponse 取响应 +2 处的 u16 当 task/事件 id,
+	 * <=0 时直接构造 "Error reading response from VHA device." 并丢弃响应
+	 * (池路径表现为 phydnnWaitForEvent 失败 / ORT 路径表现为 5s 超时)。
+	 * 实测库只接受 1 或 4。回退=删掉本块。 */
+	{
+		u16 *ridp = (u16 *)&rsp->ursp;
+
+		ridp[1] = 1;
+		dev_info(npu->dev, "[VHA-RESPFIX] rsp[+2] <- 1\n");
+	}
 	ret = copy_to_user(buf, &rsp->ursp, ret_len);
 	if (ret) {
 		ret = -EFAULT;
@@ -861,7 +871,7 @@ static ssize_t vha_real_submit(struct phytium_npu_dev *npu,
 				}
 				tmo = (int)((ktime_get_ns() - vha_t_start) / 1000000ULL);
 				dev_info(npu->dev, "[VHA-TIME] 等待完成: %d ms 来源=%s done=%u\n",
-					 tmo, src == 1 ? "IRQ响应" : (src == 2 ? "CRC" : "超时/其他"), done);
+					 tmo, src == 1 ? "IRQ响应" : (src == 2 ? "CRC" : (src == 3 ? "硬件进度" : "超时/其他")), done);
 			}
 			if (done && vha_settle_ms > 0) {
 				u32 last = vha_out_crc();
@@ -1435,6 +1445,52 @@ static long phytium_npu_ioctl(struct file *file, unsigned int cmd, unsigned long
 	case NPU_DEBUG_PERF:
 		retval = phytium_npu_mm_debug_perf(npu, sess, (void __user *)arg);
 		break;
+
+	/* Hermes 2026-10-01: 运行时确实会发的两条【释放类】命令。
+	 * 此前落到 default ⇒ 返回 -EINVAL ⇒ 厂商库在 buffer 释放/解映射路径上
+	 * 失败并无限重试（dmesg: "No this cmd to execute." 洪泛 + 21438 解映射失败）。
+	 * 这里只做驱动侧簿记：把该 page_idx 标记为不再映射，成功返回 0。
+	 */
+	case VHA_RELEASE_PG5: {
+		u32 idx = 0;
+		struct vha_alloc_entry *e;
+
+		if (copy_from_user(&idx, (void __user *)arg, sizeof(idx))) {
+			retval = -EFAULT;
+			break;
+		}
+		mutex_lock(&vha_alloc_mutex);
+		e = vha_find_by_page(idx);
+		if (e)
+			e->mapped = 0;
+		mutex_unlock(&vha_alloc_mutex);
+		dev_info(npu->dev, "[VHA-REL5] page_idx=%u %s\n",
+			 idx, e ? "released" : "absent(ok)");
+		retval = 0;
+		break;
+	}
+
+	case VHA_RELEASE_PG8: {
+		u64 raw = 0;
+		u32 idx;
+		struct vha_alloc_entry *e;
+
+		if (copy_from_user(&raw, (void __user *)arg, sizeof(raw))) {
+			retval = -EFAULT;
+			break;
+		}
+		idx = (u32)raw;
+		mutex_lock(&vha_alloc_mutex);
+		e = vha_find_by_page(idx);
+		if (e)
+			e->mapped = 0;
+		mutex_unlock(&vha_alloc_mutex);
+		dev_info(npu->dev, "[VHA-REL8] page_idx=%u %s\n",
+			 idx, e ? "released" : "absent(ok)");
+		retval = 0;
+		break;
+	}
+
 	default:
 		dev_err(npu->dev, "No this cmd to execute.");
 		retval = -EINVAL;
@@ -1467,11 +1523,17 @@ static int phytium_npu_mmap(struct file *file, struct vm_area_struct *vma)
 		if (within + size <= e_aligned) {
 			if (e->dma_handle) {
 				unsigned long save = vma->vm_pgoff;
-				/* map coherent memory; handle offset ourselves */
-				vma->vm_pgoff = 0;
+
+				/* Hermes 2026-10-01 修正: dma_common_mmap 内部
+				 * pfn = page_to_pfn(virt_to_page(cpu_addr)) + vm_pgoff，
+				 * 因此 vm_pgoff 只能放"缓冲内偏移"，不能加 dma_handle
+				 * （加了会重复计算 → "No such device or address"）。
+				 * 长度传 VMA 自身 size；within=0 时与旧行为完全一致。
+				 */
+				vma->vm_pgoff = within >> PAGE_SHIFT;
 				ret = dma_mmap_coherent(e->npu->dev, vma,
 							e->kvaddr, e->dma_handle,
-							within + size);
+							size);
 				vma->vm_pgoff = save;
 			} else if (remap_vmalloc_range(vma, e->kvaddr + within, 0) == 0) {
 				ret = 0;

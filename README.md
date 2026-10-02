@@ -26,6 +26,21 @@
 | 稳定性 | 全程 `oops=0`；桥接修复后无"偶发写回失败"（修复前 ~40% 失败率） |
 | 服务验收（六项全通过） | 跨模型轮换 / 同模型连跑 / **并发两客户端** / **worker 超时击杀** / **外部击杀自愈** / **systemd 部署 + 冒烟自检** |
 
+
+### 最新进展（2026-10-02）：ORT EP 路径打通 + 一个不可行结论
+
+| 项 | 结果 |
+|---|---|
+| **真根因（一行修复）** | 响应里 **`rsp->ursp +2` 的 u16 必须回填 1 或 4**（库只认这两个值），否则库丢弃整条响应。这一个 bug 同时制造了两种症状：池路径 **`-3 SERVER`**（连厂商预编译的 mobilenet 都跑不起来）与 ORT 路径 **5 秒超时**（但输出数值仍正确，极易误判成中断/时序问题） |
+| 修复后 | 池路径 `mobilenet` argmax 111 / nonzero 1000（连跑 3 次一致）；ORT 路径 `cosine=0.999394`、`ten_runs` **10/10 数值全对**、每次 ~410 ms；`done=0 after 5002ms` 消失 |
+| **不可行结论** | **用 ORT EP 加速 SenseVoice（Transformer 编码器）不成立**：全图 **3803 个节点里只有 1 个**能上 NPU（一个 FSMN Conv），其余全回退 CPU —— 与厂商手册"NPU 后端只支持 CNN 模型"完全吻合；也与 `docs/09` 的离线工具链分段限制结论同向 |
+| 附带澄清 | `insufficient size of memory buffer (417792 < 2445312)` 里两个数**都是厂商编译器自己声明的**（`417792 = 512×204×1×4` 是 ONNX 声明形状，`2445312` 是 CNV 填充格式要求）⇒ 属 EP 张量分配问题，**内核驱动不参与** |
+| 新增文档 | [`docs/10`](docs/10-ort-ep-and-response-fix.md)（ORT 路径与真根因）、[`docs/11`](docs/11-methodology-and-tools.md)（方法论与工具） |
+
+> ⚠️ 本轮也订正了两处**我们自己的错误结论**（"832 B 是公共前导块"、"回报放大尺寸是错的"），
+> 成因分别是"比对前没清 dmesg"与"用两个都晚于成功时刻的构建做 A/B"。
+> 两条教训已写入 [`docs/11`](docs/11-methodology-and-tools.md) 的**取证纪律**与**回归排查**。
+
 **一句话**：从零到"多应用可用的 NPU 服务"，验证路径 = 开源驱动顶替 → VHA ABI 桥接 →
 **桥接自身 6 处缺陷逐一定位修复** → 厂商库交付缺陷在**用户态**补齐 → 因库不支持同进程多图，
 服务化采用**每模型一进程**。
@@ -55,6 +70,8 @@
 | [`docs/07-pitfalls.md`](docs/07-pitfalls.md) | 踩坑速查（20 条，按症状索引） | 排障时当手册翻 |
 | [`docs/08-reproduce.md`](docs/08-reproduce.md) | 复现步骤：装驱动 → 编译 → 跑模型 → 验收 | 要复刻的人 |
 | [`docs/09-model-compile-pipeline.md`](docs/09-model-compile-pipeline.md) | **用自己的模型编出可部署包**（`model_build`/`npu_compiler`）：两份配置文件的 schema、必需修复、错误对照表 | 想跑厂商预编译包之外的模型的人（**ASR/自定义模型必读**） |
+| [`docs/10-ort-ep-and-response-fix.md`](docs/10-ort-ep-and-response-fix.md) | **定制 ONNX Runtime（`PHYNPUExecutionProvider`）路径**：响应 task-id 回填这个真根因（一行修复治好"池路径 -3"与"ORT 5s 超时"）、**为什么 ORT EP 加速 SenseVoice 不成立**、VERBOSE 日志与缓冲清单对照 | 想用 `session.run()` 直接跑 ONNX 的人（**先读这篇的 §二**） |
+| [`docs/11-methodology-and-tools.md`](docs/11-methodology-and-tools.md) | **排查方法论与工具**：断言纪律（构建校验）、取证纪律（清日志缓冲）、回归排查、判据设计、反汇编定位法、症状→根因速查 | **所有人都该先读这篇** |
 | [`UPLOAD-MANIFEST.md`](UPLOAD-MANIFEST.md) | 本仓库包含什么、**不含什么、去哪拿** | 所有人 |
 | [`NOTICE.md`](NOTICE.md) | 第三方材料与许可证边界 | 分发前必看 |
 
@@ -62,6 +79,7 @@
 - `src/` — 我们对开源内核驱动的修改（**VHA 兼容桥接**主体，GPL-2.0）
 - `svc/` — 推理服务（单进程版 + **进程池版**）、客户端库/示例、验收脚本、systemd unit
 - `tools/00-model-compile/` — **自编模型包模板**（容器内编译脚本 + io.json/test.json 示例 + 校准数据生成器）
+- `tools/ort-ep/` — **定制 ORT 路径**配套脚本：模型二分 `model_bisect.py`、VERBOSE 取证 `sv_verbose.py`、验收 `verify_npu.py`/`ten_runs.py`、响应回填补丁 `apply_respfix.py`
 - `tools/` — 自建最小运行器 `npu_det`/`npu_gen`、页级缓冲读取 `npu_peek`（破案关键工具）、
   寄存器快照 `regsnap.py`、解码器 `decode_y5.py`/`decode_scrfd.py`
 - `scripts/` — 取证脚本（ELF 字符串/反汇编、MBS 容器解析、全 0 CRC 探针等）
