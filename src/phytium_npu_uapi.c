@@ -187,6 +187,12 @@ static int vha_overalloc_min = 65536;
  * 而全序列里 448000 只出现 1 次 => 只放大它，多花 0.46MB，CMA 完全够。
  * 0=关闭。 */
 static unsigned long long vha_overalloc_exact;
+/* HERMES-REPORT-BOOST: 是否把【回报给库的尺寸】也改成放大后的值。
+ * 0=只放大实际分配(库记账不变)；1=连回报值一起放大(库会看到更大的容量)。 */
+static int vha_overalloc_report;
+module_param(vha_overalloc_report, int, 0644);
+MODULE_PARM_DESC(vha_overalloc_report, "VHA: also report the boosted size to userspace");
+static int vha_report_boost;
 module_param(vha_overalloc_exact, ullong, 0644);
 MODULE_PARM_DESC(vha_overalloc_exact, "VHA: only overalloc buffers whose req.size == this");
 
@@ -443,7 +449,7 @@ static u32 vha_out_crc(void)
 
 	mutex_lock(&vha_alloc_mutex);
 	list_for_each_entry(e, &vha_allocs, list) {
-		size_t len = e->size;
+		size_t len = e->req_size ? e->req_size : e->size;   /* HERMES-CMDSIZE-FIX */
 
 		if (!e->mapped || !e->kvaddr || !len)
 			continue;
@@ -670,11 +676,15 @@ static ssize_t vha_real_submit(struct phytium_npu_dev *npu,
 			e = vha_find_by_page(vha_cmd_page >= 0 ? (unsigned)vha_cmd_page : t);
 			if (e && e->mapped) {
 				cmd_base = e->iova;
-				cmd_words = e->size / 32;
+				/* HERMES-CMDSIZE-FIX: 命令流必须用【逻辑尺寸】(e->req_size)。
+				 * e->size 现在是"实际分配尺寸"(可能被 OVERALLOC 放大)，
+				 * 用它算 cmd_words 会把 26 条算成 128 条 => 库按错字数解析 => 不写回。 */
+				cmd_words = (e->req_size ? e->req_size : e->size) / 32;
 				dev_info(npu->dev,
 					 "[VHA-SUBMIT] cmd buf page=%u iova=%#llx size=%zu words=%u crc32=%#x\n",
-					 t, cmd_base, e->size, cmd_words,
-					 crc32_le(0xffffffff, e->kvaddr, e->size) ^ 0xffffffff);
+					 t, cmd_base, e->req_size ? e->req_size : e->size, cmd_words,
+					 crc32_le(0xffffffff, e->kvaddr,
+						  e->req_size ? e->req_size : e->size) ^ 0xffffffff);
 				/* Hermes 25th: decode command-stream header */
 				{
 					u32 *w = e->kvaddr;
@@ -1327,12 +1337,14 @@ static long phytium_npu_ioctl(struct file *file, unsigned int cmd, unsigned long
 					 req.size, ask, vha_overalloc_mul, req.name);
 			}
 			/* HERMES-OVERALLOC-EXACT: 只放大精确匹配的那块 */
+			vha_report_boost = 0;
 			if (vha_overalloc_exact &&
 			    req.size == (u64)vha_overalloc_exact) {
 				ask = PAGE_ALIGN(req.size * (size_t)(vha_overalloc_mul > 1 ? vha_overalloc_mul : 3));
+				vha_report_boost = vha_overalloc_report;
 				dev_info(npu->dev,
-					 "[VHA-OVERALLOC-EXACT] req=%llu -> ask=%zu name=%.8s\n",
-					 req.size, ask, req.name);
+					 "[VHA-OVERALLOC-EXACT] req=%llu -> ask=%zu name=%.8s report_boost=%d\n",
+					 req.size, ask, req.name, vha_report_boost);
 			}
 			vha_alloc_ask = ask;
 		}
@@ -1366,6 +1378,9 @@ static long phytium_npu_ioctl(struct file *file, unsigned int cmd, unsigned long
 
 		req.addr = (u64)e->start_page << PAGE_SHIFT;
 		req.page_idx = (u32)e->start_page;
+		/* HERMES-REPORT-BOOST-USE: 可选地把回报尺寸也改成放大后的值 */
+		if (vha_report_boost)
+			req.size = (u64)e->size;
 
 		if (copy_to_user((void __user *)arg, &req, sizeof(req)))
 			retval = -EFAULT;
