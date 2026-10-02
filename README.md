@@ -27,6 +27,19 @@
 | 服务验收（六项全通过） | 跨模型轮换 / 同模型连跑 / **并发两客户端** / **worker 超时击杀** / **外部击杀自愈** / **systemd 部署 + 冒烟自检** |
 
 
+###### 方向1 实测（2026-10-03 凌晨）
+
+| 项 | 结果 |
+|---|---|
+| 机制 | 把"实际分配尺寸"与"回报给库的尺寸"**解耦**（`HERMES-OVERALLOC` / `-EXACT`）⇒ **已验证生效**（`req=448000 -> ask=1347584`） |
+| CMA 预算 | 一次 SenseVoice 加载 **726 次分配、364.3 MB**（`417792`×400 + `665856`×322，占 99%），**0 次释放** ⇒ 是"每段独立缓冲、不复用"的**必需开销**，非泄漏 |
+| 全局放大 | ❌ 2 倍/2.04 倍都需 ≈743 MB > 可用 658 MB |
+| 精确放大 | ✅ 只放大 `x`（`448000`，全序列仅 1 次）+0.46 MB，预算可行 |
+| 撞到的新问题 | 全局放大实验把 CMA 吃到 4 MB，且**卸载模块也不归还**（`cma_alloc: req-size: 329 pages, ret: -16`）⇒ **只能整机重启** |
+| 精确倍数 | `913920 = 448000 × 2.0400`（精确）= `457776 × 1.9964` |
+
+详见 [`docs/15`](docs/15-overalloc-attempt.md)。
+
 ##### 尺寸错位性质判定（2026-10-02 深夜续）
 
 | 项 | 结论 |
@@ -114,6 +127,7 @@
 | [`docs/12-sensevoice-borrow-shell.md`](docs/12-sensevoice-borrow-shell.md) | **SenseVoice 上 NPU 的"借壳"路线**：用离线工具链编包 + 池路径加载（绕开 ORT EP 的算子表限制）；实测切成 **1600+ 个 NPU 段**；修掉"释放不真释放"导致的 CMA 泄漏；当前卡点（段 IO 声明尺寸 vs 库申请尺寸）与数字关系 | 想让非 CNN 模型（ASR/Transformer）上 NPU 的人 |
 | [`docs/13-cma-fixed-and-blocker.md`](docs/13-cma-fixed-and-blocker.md) | **CMA 泄漏已修（含"不是我们占的"这一澄清）** + 当前卡点的精确成因（`in32out32_d16_w16b16` 量化配置导致段 IO 与运行时申请 2 倍口径差）+ 重编所需工具链现状（设备已有 aarch64 `libnpucompiler.so`，缺 CLI 前端） | 继续推进借壳路线的人 |
 | [`docs/14-size-mismatch-nature.md`](docs/14-size-mismatch-nature.md) | **尺寸错位的性质判定**：`913920` 不在任何编译产物里（三处、LE 都搜过）⇒ 是**库内部两套口径**，不是编译配置问题 ⇒ **重编包大概率无用**；并记录当初"部分成功 + 手工修包"的现场（`tarfix/` 141 个 mbs） | 继续推进借壳路线的人（**先读这篇再决定是否重编**） |
+| [`docs/15-overalloc-attempt.md`](docs/15-overalloc-attempt.md) | **方向1 实测**：把"实际分配尺寸"与"回报给库的尺寸"解耦（`HERMES-OVERALLOC` / `-EXACT`）——机制可行；但 SenseVoice 需 364 MB、CMA 余量仅约 294 MB ⇒ **只能精确放大单块**；并记录"CMA 被钉住只能重启"的教训 | 继续推进借壳路线的人 |
 | [`UPLOAD-MANIFEST.md`](UPLOAD-MANIFEST.md) | 本仓库包含什么、**不含什么、去哪拿** | 所有人 |
 | [`NOTICE.md`](NOTICE.md) | 第三方材料与许可证边界 | 分发前必看 |
 

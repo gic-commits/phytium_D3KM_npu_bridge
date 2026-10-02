@@ -150,6 +150,7 @@ struct vha_alloc_entry {
 	dma_addr_t dma_handle;   /* DMA/bus address (NPU-visible via MMU) */
 	struct phytium_npu_dev *npu;
 	size_t size;
+	size_t req_size;   /* HERMES-OVERALLOC: 库请求的逻辑尺寸 */
 	unsigned long start_page;
 	u64 iova;                /* mapped NPU IOVA (B2) */
 	u32 map_type;            /* NPU_MAP_TYPE_* used at B2 */
@@ -170,7 +171,28 @@ static LIST_HEAD(vha_mmaps);
 
 static LIST_HEAD(vha_allocs);
 static DEFINE_MUTEX(vha_alloc_mutex);
+static size_t vha_alloc_ask;   /* HERMES-OVERALLOC */
 static unsigned long vha_next_page;
+/* HERMES-OVERALLOC: 内部按放大尺寸分配，但【回报给库的尺寸保持原值】。
+ * 动机：厂商库在"建网络对象"阶段会用【段 IO 声明的尺寸】校验缓冲容量
+ * (实测 sensevoice: 申请 457776 但校验要 913920)，而库自己申请时用的是较小值。
+ * 解耦后：库的记账不变(不会触发 parser 错误)，实际容量变大(能过校验)。
+ * 0=关闭(默认)；N=按 N 倍放大(仅当请求 >= vha_overalloc_min 时生效)。 */
+static int vha_overalloc_mul;
+module_param(vha_overalloc_mul, int, 0644);
+MODULE_PARM_DESC(vha_overalloc_mul, "VHA: internal alloc = req.size * N (report size unchanged)");
+static int vha_overalloc_min = 65536;
+/* HERMES-OVERALLOC-EXACT: 只放大【请求尺寸恰好等于 vha_overalloc_exact】的那块缓冲。
+ * 动机：sensevoice 的 x 输入(x[1,200,560] f32 = 448000)被段 IO 按 913920 校验，
+ * 而全序列里 448000 只出现 1 次 => 只放大它，多花 0.46MB，CMA 完全够。
+ * 0=关闭。 */
+static unsigned long long vha_overalloc_exact;
+module_param(vha_overalloc_exact, ullong, 0644);
+MODULE_PARM_DESC(vha_overalloc_exact, "VHA: only overalloc buffers whose req.size == this");
+
+module_param(vha_overalloc_min, int, 0644);
+MODULE_PARM_DESC(vha_overalloc_min, "VHA: apply overalloc only when req.size >= this");
+
 static int vha_alloc_ord;
 
 static void vha_dump_crcs(struct phytium_npu_dev *npu, const char *tag)
@@ -1293,12 +1315,33 @@ static long phytium_npu_ioctl(struct file *file, unsigned int cmd, unsigned long
 			break;
 		}
 		e->npu = npu;
+		/* HERMES-OVERALLOC: 计算实际分配尺寸(内部)，回报尺寸仍用 req.size */
+		{
+			size_t ask = PAGE_ALIGN(req.size);
+
+			if (vha_overalloc_mul > 1 &&
+			    req.size >= (u64)vha_overalloc_min) {
+				ask = PAGE_ALIGN(req.size * (size_t)vha_overalloc_mul);
+				dev_info(npu->dev,
+					 "[VHA-OVERALLOC] req=%llu -> ask=%zu (x%d) name=%.8s\n",
+					 req.size, ask, vha_overalloc_mul, req.name);
+			}
+			/* HERMES-OVERALLOC-EXACT: 只放大精确匹配的那块 */
+			if (vha_overalloc_exact &&
+			    req.size == (u64)vha_overalloc_exact) {
+				ask = PAGE_ALIGN(req.size * (size_t)(vha_overalloc_mul > 1 ? vha_overalloc_mul : 3));
+				dev_info(npu->dev,
+					 "[VHA-OVERALLOC-EXACT] req=%llu -> ask=%zu name=%.8s\n",
+					 req.size, ask, req.name);
+			}
+			vha_alloc_ask = ask;
+		}
 		if (vha_sim_mode) {
-			e->kvaddr = vmalloc_user(req.size);
+			e->kvaddr = vmalloc_user(vha_alloc_ask);
 			e->dma_handle = 0;
 		} else {
 			/* B1: NPU-visible coherent memory */
-			e->kvaddr = dma_alloc_coherent(npu->dev, PAGE_ALIGN(req.size),
+			e->kvaddr = dma_alloc_coherent(npu->dev, vha_alloc_ask,
 						       &e->dma_handle, GFP_KERNEL);
 		}
 		if (!e->kvaddr) {
@@ -1306,8 +1349,9 @@ static long phytium_npu_ioctl(struct file *file, unsigned int cmd, unsigned long
 			retval = -ENOMEM;
 			break;
 		}
-		e->size = req.size;
-		pages = (req.size + PAGE_SIZE - 1) >> PAGE_SHIFT;
+		e->req_size = req.size;        /* 逻辑尺寸(库请求的) */
+		e->size = vha_alloc_ask;       /* 实际分配尺寸(可能放大) */
+		pages = (vha_alloc_ask + PAGE_SIZE - 1) >> PAGE_SHIFT;
 		e->alloc_ord = vha_alloc_ord++;
 		dev_info(npu->dev, "%s: alloc#%d size=%llu page=%lu pgoff=%lu phys=%pad kva=%p%s\n",
 			 __func__, e->alloc_ord, req.size, vha_next_page,
