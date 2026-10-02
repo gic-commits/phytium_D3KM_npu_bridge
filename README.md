@@ -48,7 +48,7 @@
 |---|---|
 | **真根因（一行修复）** | 响应里 **`rsp->ursp +2` 的 u16 必须回填 1 或 4**（库只认这两个值），否则库丢弃整条响应。这一个 bug 同时制造了两种症状：池路径 **`-3 SERVER`**（连厂商预编译的 mobilenet 都跑不起来）与 ORT 路径 **5 秒超时**（但输出数值仍正确，极易误判成中断/时序问题） |
 | 修复后 | 池路径 `mobilenet` argmax 111 / nonzero 1000（连跑 3 次一致）；ORT 路径 `cosine=0.999394`、`ten_runs` **10/10 数值全对**、每次 ~410 ms；`done=0 after 5002ms` 消失 |
-| **不可行结论** | **用 ORT EP 加速 SenseVoice（Transformer 编码器）不成立**：全图 **3803 个节点里只有 1 个**能上 NPU（一个 FSMN Conv），其余全回退 CPU —— 与厂商手册"NPU 后端只支持 CNN 模型"完全吻合；也与 `docs/09` 的离线工具链分段限制结论同向 |
+| **不可行结论（仅限 ORT EP 这条路径）** | **用 ORT EP 加速 SenseVoice（Transformer 编码器）不成立**：全图 **3803 个节点里只有 1 个**能上 NPU（一个 FSMN Conv），其余全回退 CPU —— 与厂商手册"NPU 后端只支持 CNN 模型"完全吻合；⚠️ 但**不要外推**为"SenseVoice 不能上 NPU" —— 离线工具链编包 + 池路径加载（"借壳"）这条路可行，见 [`docs/12`](docs/12-sensevoice-borrow-shell.md) |
 | 附带澄清 | `insufficient size of memory buffer (417792 < 2445312)` 里两个数**都是厂商编译器自己声明的**（`417792 = 512×204×1×4` 是 ONNX 声明形状，`2445312` 是 CNV 填充格式要求）⇒ 属 EP 张量分配问题，**内核驱动不参与** |
 | 新增文档 | [`docs/10`](docs/10-ort-ep-and-response-fix.md)（ORT 路径与真根因）、[`docs/11`](docs/11-methodology-and-tools.md)（方法论与工具） |
 
