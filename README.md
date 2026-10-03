@@ -27,6 +27,18 @@
 | 服务验收（六项全通过） | 跨模型轮换 / 同模型连跑 / **并发两客户端** / **worker 超时击杀** / **外部击杀自愈** / **systemd 部署 + 冒烟自检** |
 
 
+###### 推翻碎片化 + 定位驱动侧（2026-10-03 中午）
+
+| 项 | 结果 |
+|---|---|
+| ⚠️ 撤回结论 | **CMA 碎片化不是原因** —— 重启后 CMA 干净（253 个 order-10 块 ≈1012MB 连续）仍失败 |
+| 定位 | `[VHA-ALLOC]` 显示驱动**收到** 27MB 请求，但 **`cma 失败次数: 0`** ⇒ `dma_alloc_coherent` 静默返回 NULL 且没走 CMA |
+| 试过无效 | `dma_set_coherent_mask`（原代码只设了 `dma_mask`）—— 补上后报错一模一样 |
+| 当前卡点 | 加了 `VHA-ALLOC-DIAG` 诊断，**一条都没打印** ⇒ 代码没走到 `dma_alloc_coherent`（中间某处 break，或新模块没加载） |
+| 下次第一步 | ① 对比 `srcversion` 确认模块真加载 ② 看 `[VHA-ALLOC-RAW]` 是否打印 ⇒ 定位 break 点 |
+
+详见 [`docs/18`](docs/18-alloc-fail-driver-side.md)。
+
 ###### CMA 碎片化卡点（2026-10-03 上午）
 
 | 项 | 结果 |
@@ -158,6 +170,7 @@
 | [`docs/15-overalloc-attempt.md`](docs/15-overalloc-attempt.md) | **方向1 实测**：把"实际分配尺寸"与"回报给库的尺寸"解耦（`HERMES-OVERALLOC` / `-EXACT`）——机制可行；但 SenseVoice 需 364 MB、CMA 余量仅约 294 MB ⇒ **只能精确放大单块**；并记录"CMA 被钉住只能重启"的教训 | 继续推进借壳路线的人 |
 | [`docs/16-mbs-capacity-fix.md`](docs/16-mbs-capacity-fix.md) | **MBS 容量字段修正**：`457776 vs 913920` 是【编译产物 MBS 里容量字段算错】（容量 = 基准×2.0036 不精确，要求 = 基准×4 精确）；含 `tar -uf` 是追加不是替换的教训；strace 发现库读 `__internal_io_file__.orig` | 继续推进借壳路线的人 |
 | [`docs/17-cma-fragmentation.md`](docs/17-cma-fragmentation.md) | **CMA 碎片化卡点**：改 MBS 的 `0x368`（段IO要求）让 `Buffer ID` 校验通过；新卡点是库先做 1305 次小分配把 CMA 切碎、再要 27MB 连续块 ⇒ `cma_alloc` 返回 `-16`；含"卸载模块不恢复碎片""`__GFP_RETRY_MAYFAIL` 无效"等实测 | 继续推进借壳路线的人 |
+| [`docs/18-alloc-fail-driver-side.md`](docs/18-alloc-fail-driver-side.md) | **推翻 CMA 碎片化**：重启后 CMA 完全干净（253 个 order-10 块 ≈1012MB 连续）仍失败；驱动收到请求但 `dma_alloc_coherent` 静默返回 NULL 且 `cma 失败=0`；`coherent_dma_mask` 补上无效；`VHA-ALLOC-DIAG` 没打印 ⇒ 代码没走到那里 | 继续推进借壳路线的人 |
 | [`UPLOAD-MANIFEST.md`](UPLOAD-MANIFEST.md) | 本仓库包含什么、**不含什么、去哪拿** | 所有人 |
 | [`NOTICE.md`](NOTICE.md) | 第三方材料与许可证边界 | 分发前必看 |
 

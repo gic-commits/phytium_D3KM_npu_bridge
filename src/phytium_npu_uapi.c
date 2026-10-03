@@ -1365,8 +1365,17 @@ static long phytium_npu_ioctl(struct file *file, unsigned int cmd, unsigned long
 				g = GFP_KERNEL | __GFP_RETRY_MAYFAIL;
 			else if (vha_gfp_tune == 2)
 				g = GFP_KERNEL | __GFP_RETRY_MAYFAIL | __GFP_NORETRY;
+			/* HERMES-ALLOC-DIAG: 打印分配前后的详细信息 */
+			dev_info(npu->dev,
+				 "[VHA-ALLOC-DIAG] try size=%zu gfp=%#x dev=%s dma_mask=%#llx coh_mask=%#llx\n",
+				 vha_alloc_ask, g, dev_name(npu->dev),
+				 (unsigned long long)dma_get_mask(npu->dev),
+				 (unsigned long long)npu->dev->coherent_dma_mask);
 			e->kvaddr = dma_alloc_coherent(npu->dev, vha_alloc_ask,
 						       &e->dma_handle, g);
+			dev_info(npu->dev,
+				 "[VHA-ALLOC-DIAG] ret=%p phys=%pad\n",
+				 e->kvaddr, &e->dma_handle);
 		}
 		if (!e->kvaddr) {
 			kfree(e);
