@@ -27,6 +27,20 @@
 | 服务验收（六项全通过） | 跨模型轮换 / 同模型连跑 / **并发两客户端** / **worker 超时击杀** / **外部击杀自愈** / **systemd 部署 + 冒烟自检** |
 
 
+###### CMA 碎片化卡点（2026-10-03 上午）
+
+| 项 | 结果 |
+|---|---|
+| ✅ 突破 | 改 MBS 的 **`0x368`（段IO要求）** 让 `Buffer ID: 10` 校验**通过**（改 `0x358` 无效） |
+| 新卡点 | `FATAL: failed to allocate 28459008 bytes` / `Cannot allocate vha memory for TEMPORARY buffer` |
+| 根因 | 库先做 **1305 次小分配（190 MB）把 CMA 切碎**，再要 **27 MB 连续块** ⇒ `cma_alloc` 返回 **`-16`（EBUSY）** |
+| CMA 实测 | `CmaFree` 640 MB，但 `DMA32` 区 CMA 只有 148 个 order-10 块 ⇒ 凑不出 7 个连续块 |
+| 关键事实 | **卸载模块后碎片完全不变**（order-10 仍 148）⇒ 不是我们占的 |
+| 无效方案 | `__GFP_RETRY_MAYFAIL` / 重载模块 / 移走解包副本 / 改 `0x358` |
+| 下一步 | ① 驱动"大块预留池" ② `cma=2048M` ③ SG 映射（驱动已有 `map_sg`） |
+
+详见 [`docs/17`](docs/17-cma-fragmentation.md)。
+
 ###### MBS 容量字段修正（2026-10-03 凌晨续）
 
 | 项 | 结果 |
@@ -143,6 +157,7 @@
 | [`docs/14-size-mismatch-nature.md`](docs/14-size-mismatch-nature.md) | **尺寸错位的性质判定**：`913920` 不在任何编译产物里（三处、LE 都搜过）⇒ 是**库内部两套口径**，不是编译配置问题 ⇒ **重编包大概率无用**；并记录当初"部分成功 + 手工修包"的现场（`tarfix/` 141 个 mbs） | 继续推进借壳路线的人（**先读这篇再决定是否重编**） |
 | [`docs/15-overalloc-attempt.md`](docs/15-overalloc-attempt.md) | **方向1 实测**：把"实际分配尺寸"与"回报给库的尺寸"解耦（`HERMES-OVERALLOC` / `-EXACT`）——机制可行；但 SenseVoice 需 364 MB、CMA 余量仅约 294 MB ⇒ **只能精确放大单块**；并记录"CMA 被钉住只能重启"的教训 | 继续推进借壳路线的人 |
 | [`docs/16-mbs-capacity-fix.md`](docs/16-mbs-capacity-fix.md) | **MBS 容量字段修正**：`457776 vs 913920` 是【编译产物 MBS 里容量字段算错】（容量 = 基准×2.0036 不精确，要求 = 基准×4 精确）；含 `tar -uf` 是追加不是替换的教训；strace 发现库读 `__internal_io_file__.orig` | 继续推进借壳路线的人 |
+| [`docs/17-cma-fragmentation.md`](docs/17-cma-fragmentation.md) | **CMA 碎片化卡点**：改 MBS 的 `0x368`（段IO要求）让 `Buffer ID` 校验通过；新卡点是库先做 1305 次小分配把 CMA 切碎、再要 27MB 连续块 ⇒ `cma_alloc` 返回 `-16`；含"卸载模块不恢复碎片""`__GFP_RETRY_MAYFAIL` 无效"等实测 | 继续推进借壳路线的人 |
 | [`UPLOAD-MANIFEST.md`](UPLOAD-MANIFEST.md) | 本仓库包含什么、**不含什么、去哪拿** | 所有人 |
 | [`NOTICE.md`](NOTICE.md) | 第三方材料与许可证边界 | 分发前必看 |
 

@@ -190,6 +190,13 @@ static unsigned long long vha_overalloc_exact;
 /* HERMES-REPORT-BOOST: 是否把【回报给库的尺寸】也改成放大后的值。
  * 0=只放大实际分配(库记账不变)；1=连回报值一起放大(库会看到更大的容量)。 */
 static int vha_overalloc_report;
+/* HERMES-GFP-TUNE: CMA 分配失败(-16)时，用更积极的 gfp 重试。
+ * 0=GFP_KERNEL(原行为)；1=GFP_KERNEL|__GFP_RETRY_MAYFAIL；
+ * 2=GFP_KERNEL|__GFP_RETRY_MAYFAIL|__GFP_ATOMIC 等组合。 */
+static int vha_gfp_tune;
+module_param(vha_gfp_tune, int, 0644);
+MODULE_PARM_DESC(vha_gfp_tune, "VHA: gfp flags for dma_alloc_coherent (0=GFP_KERNEL)");
+
 module_param(vha_overalloc_report, int, 0644);
 MODULE_PARM_DESC(vha_overalloc_report, "VHA: also report the boosted size to userspace");
 static int vha_report_boost;
@@ -1353,8 +1360,13 @@ static long phytium_npu_ioctl(struct file *file, unsigned int cmd, unsigned long
 			e->dma_handle = 0;
 		} else {
 			/* B1: NPU-visible coherent memory */
+			gfp_t g = GFP_KERNEL;
+			if (vha_gfp_tune == 1)
+				g = GFP_KERNEL | __GFP_RETRY_MAYFAIL;
+			else if (vha_gfp_tune == 2)
+				g = GFP_KERNEL | __GFP_RETRY_MAYFAIL | __GFP_NORETRY;
 			e->kvaddr = dma_alloc_coherent(npu->dev, vha_alloc_ask,
-						       &e->dma_handle, GFP_KERNEL);
+						       &e->dma_handle, g);
 		}
 		if (!e->kvaddr) {
 			kfree(e);
