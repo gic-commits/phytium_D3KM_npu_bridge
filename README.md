@@ -27,6 +27,22 @@
 | 服务验收（六项全通过） | 跨模型轮换 / 同模型连跑 / **并发两客户端** / **worker 超时击杀** / **外部击杀自愈** / **systemd 部署 + 冒烟自检** |
 
 
+###### 真相定位：库的内存堆机制（2026-10-04）
+
+| 项 | 结果 |
+|---|---|
+| ❌ 推翻1 | **CMA 碎片化** —— 干净 CMA（253 个 order-10 块）也失败 |
+| ❌ 推翻2 | **驱动分配失败** —— `VHA-ALLOC-DIAG` 1110 条全成功，最大 19.5MB |
+| ❌ 推翻3 | **驱动没收到请求** —— 真相是 dmesg 环形缓冲被冲掉；清空后只跑加载：**555×nr=2 + 555×nr=7** |
+| ★ 关键事实 | 库报的 `28459008` **从未出现在驱动记录里** ⇒ 库在发起分配**之前**就拒绝 |
+| 定位 | 库的**内存堆机制**：`VHA_GET_MEM_HEAPS` 返回 `base=0x80000000 type=1(unified) flags=1`；库日志 `INFO: Heap :unified (0x1)` ⇒ **堆被接受** |
+| 库的串 | `Maximum heap size exceeded!` / `could not create virtual address heap` / `No heap capable to alloc from` |
+| 调用链 | `AllocateMemory → VhaMemoryImp::Allocate → AllocateVhaMem → VhaVaaHeapAlloc` |
+| 已试无效 | `coherent_dma_mask` / `l3_size=512MB` / `__GFP_RETRY_MAYFAIL` / 重载模块 |
+| 下一步 | 反汇编 `No heap capable to alloc from`(0x80388) 与 `VhaVaaHeapCreate`(0xa6635) |
+
+详见 [`docs/19`](docs/19-alloc-truth-and-heap.md)。
+
 ###### 推翻碎片化 + 定位驱动侧（2026-10-03 中午）
 
 | 项 | 结果 |
@@ -171,6 +187,7 @@
 | [`docs/16-mbs-capacity-fix.md`](docs/16-mbs-capacity-fix.md) | **MBS 容量字段修正**：`457776 vs 913920` 是【编译产物 MBS 里容量字段算错】（容量 = 基准×2.0036 不精确，要求 = 基准×4 精确）；含 `tar -uf` 是追加不是替换的教训；strace 发现库读 `__internal_io_file__.orig` | 继续推进借壳路线的人 |
 | [`docs/17-cma-fragmentation.md`](docs/17-cma-fragmentation.md) | **CMA 碎片化卡点**：改 MBS 的 `0x368`（段IO要求）让 `Buffer ID` 校验通过；新卡点是库先做 1305 次小分配把 CMA 切碎、再要 27MB 连续块 ⇒ `cma_alloc` 返回 `-16`；含"卸载模块不恢复碎片""`__GFP_RETRY_MAYFAIL` 无效"等实测 | 继续推进借壳路线的人 |
 | [`docs/18-alloc-fail-driver-side.md`](docs/18-alloc-fail-driver-side.md) | **推翻 CMA 碎片化**：重启后 CMA 完全干净（253 个 order-10 块 ≈1012MB 连续）仍失败；驱动收到请求但 `dma_alloc_coherent` 静默返回 NULL 且 `cma 失败=0`；`coherent_dma_mask` 补上无效；`VHA-ALLOC-DIAG` 没打印 ⇒ 代码没走到那里 | 继续推进借壳路线的人 |
+| [`docs/19-alloc-truth-and-heap.md`](docs/19-alloc-truth-and-heap.md) | **连续推翻三个假设**（CMA 碎片化 / 驱动分配失败 / 驱动没收到请求），定位到库的**内存堆机制**：驱动 555 次分配全成功、库识别到 `Heap :unified`，但库报 `failed to allocate 28459008` 是**库内部判断**；含"dmesg 环形缓冲冲掉日志"的排查教训 | 继续推进借壳路线的人 |
 | [`UPLOAD-MANIFEST.md`](UPLOAD-MANIFEST.md) | 本仓库包含什么、**不含什么、去哪拿** | 所有人 |
 | [`NOTICE.md`](NOTICE.md) | 第三方材料与许可证边界 | 分发前必看 |
 

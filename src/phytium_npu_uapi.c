@@ -194,6 +194,11 @@ static int vha_overalloc_report;
  * 0=GFP_KERNEL(原行为)；1=GFP_KERNEL|__GFP_RETRY_MAYFAIL；
  * 2=GFP_KERNEL|__GFP_RETRY_MAYFAIL|__GFP_ATOMIC 等组合。 */
 static int vha_gfp_tune;
+/* HERMES-INFO-FIX: 报告给库的 L3 大小（字节）。默认 512MB。 */
+static unsigned int vha_info_l3_size = 512u << 20;
+module_param(vha_info_l3_size, uint, 0644);
+MODULE_PARM_DESC(vha_info_l3_size, "VHA: l3_size reported via NPU_INFO (bytes)");
+
 module_param(vha_gfp_tune, int, 0644);
 MODULE_PARM_DESC(vha_gfp_tune, "VHA: gfp flags for dma_alloc_coherent (0=GFP_KERNEL)");
 
@@ -1222,9 +1227,13 @@ phytium_npu_get_info(struct phytium_npu_dev *npu, struct phytium_npu_session *se
 	info->mefficiency = 1;
 	info->use_debug = 0;
 	info->core_num = 1;
+	/* HERMES-INFO-FIX: 原来全填 0 => 库认为"没有可用内存" =>
+	 * 大块(27MB)分配在【发起之前】就被库自己拒绝
+	 * (FATAL: failed to allocate 28459008 bytes, 但驱动侧从未收到该请求)。
+	 * 填成实际可用量（CMA 1GB，留余量）。 */
 	info->l1_size = 0;
-	info->l3_size = 0;
-	info->l3_percore_size = 0;
+	info->l3_size = vha_info_l3_size;
+	info->l3_percore_size = vha_info_l3_size;
 	info->clock_freq = npu->clock_freq;
 	if (copy_to_user(arg, info, sizeof(*info)))
 		return -EFAULT;
@@ -1234,11 +1243,15 @@ phytium_npu_get_info(struct phytium_npu_dev *npu, struct phytium_npu_session *se
 static long phytium_npu_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct phytium_npu_session *sess = file->private_data;
-	struct phytium_npu_dev *npu = sess->npu_dev;
+	struct phytium_npu_dev *npu;
 	int retval = 0;
 
+	/* HERMES-IOCTL-ENTRY: 无条件记录每个 ioctl（验证驱动是否收到） */
+	pr_err("[VHA-IOCTL-ENTRY] cmd=%#x nr=%u sess=%p\n",
+	       cmd, cmd & 0xff, sess);
 	if (!sess)
 		return -EINVAL;
+	npu = sess->npu_dev;
 	dev_dbg(npu->dev, "%s: cmd: 0x%x\n", __func__, cmd);
 
 	/* T1': log every 'q' command with its payload (first 64B) */
@@ -1314,8 +1327,9 @@ static long phytium_npu_ioctl(struct file *file, unsigned int cmd, unsigned long
 			retval = -EFAULT;
 			break;
 		}
-		dev_info(npu->dev, "%s: alloc size=%llu name=%.8s\n",
-			 __func__, req.size, req.name);
+		/* HERMES-ALLOC-ERR: 用 pr_err 确保输出（验证分支是否执行） */
+		pr_err("[VHA-ALLOC-ERR] %s: alloc size=%llu name=%.8s\n",
+		       __func__, req.size, req.name);
 		/* Hermes 20th: dump raw 32B ALLOC payload to find flags
 		 * (mem_attr: NOMAP=0x20 / OCM=0x20000000)
 		 */
