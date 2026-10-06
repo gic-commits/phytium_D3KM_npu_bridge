@@ -52,7 +52,40 @@
 | Restnet50 | 1 | ✓ 连跑 4/4 |
 | sensevoice | 3（然后停） | ✗ |
 
-## 五、给下一轮的明确抓手
+## 五·补 ★本轮最关键的定位：唤醒链路 = `VhaDnnTask::Finalize() → Signal()`
+
+用反汇编追"谁唤醒主线程"：
+
+```asm
+; VhaNotifyImp::Signal()  —— 通知的正是主线程等待的 condvar (this+0x98)
+165b0:  add x0, x19, #0x98
+165c0:  b   d2c0            ; ← notify_all
+
+; 谁调用 Signal (0x16568)：
+32d2c:  bl  16568 <npu::VhaNotifyImp::Signal()>      ← 在 VhaDnnTask::Finalize() 内
+330a8:  bl  16568 <npu::VhaNotifyImp::Signal()>      ← 在 VhaDnnTask::Done 相关代码内
+
+; 谁调用 Update (0x16310)（只写 +256，不 notify）：
+1dfc0:  bl  16310 <VhaNotifyImp::Update>              ; 传 status=1
+1ed64:  bl  16310 <VhaNotifyImp::Update>              ; 传 status=4
+```
+
+**⇒ 结论：**
+- **主线程 `WaitForCompletion` 等待的 condvar（`+0x98`）由 `VhaNotifyImp::Signal()` 唤醒；**
+- **`Signal()` 由 `npu::VhaDnnTask::Finalize()`（0x32cc0）调用**；
+- `Update()`（`1dfc0`/`1ed64`）**只写状态不 notify** ⇒ 光有 Update 不会唤醒线程
+  ⇒ **必须有人调 `Finalize()`**。
+
+**⇒ 因此：库停住的直接原因是"任务的 `Finalize()` 没有被调用"。**
+**下一步（精确）：找 `VhaDnnTask::Finalize()` 的调用者** —— 反汇编里**没有直接 `bl 32cc0`**
+⇒ 它是**经虚表/函数指针间接调用**的（`ldr xN,[xM,#off]; blr xN`），
+或由 `libphydnn_execute.so` / `libphyaiengine.so` 侧驱动。
+**只要找到"谁在什么条件下调 Finalize"，就等于找到了驱动必须满足的条件。**
+
+**（另一条并行线索：`VhaDnnTask` 还有 `SetSubmitKey/GetSubmitKey`、`SetSwProcKey/GetSwProcKey`、
+`GetSwExecutor` —— 说明"提交键/软处理键"是库用来把**响应与任务**关联的机制，
+很可能就是我们一直在猜的"响应 [+2]"的真正语义来源。）**
+
 1. **`Update` 的唤醒路径**：`VhaNotifyImp::Update` 只写 `+256` 不 notify；定位**谁负责 notify**
    （早期反汇编发现 `0x2010c` 处通知的是 `obj+0xd8`，不是 `WaitForCompletion` 等的 `+0x98`）
    —— 这很可能就是"主线程永远不被唤醒"的直接原因。
