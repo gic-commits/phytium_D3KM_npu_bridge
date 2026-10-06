@@ -52,7 +52,50 @@
 | Restnet50 | 1 | ✓ 连跑 4/4 |
 | sensevoice | 3（然后停） | ✗ |
 
-## 五·补 ★本轮最关键的定位：唤醒链路 = `VhaDnnTask::Finalize() → Signal()`
+## 五·补2 ★★★ 库对响应 `[+2]` 的**确切校验**（反汇编实锤）
+
+在 `VhaDnnImp::Execute` 的段处理 lambda（`0x1d410` 附近）：
+
+```asm
+1d410:  ldrh w0, [x0, #2]          ; ★ 读响应 [+2] 的 u16
+1d41c:  cmp  w0, #0x4
+1d420:  ccmp w0, #0x1, #0x4, ne    ; ★ 判 [+2] 是否为 4 或 1
+1d424:  b.eq 1e008                 ; 是 1 或 4 → 正常分支
+1d428:  mov  w0, #0x2
+1d42c:  str  w0, [sp, #212]        ; 否则 status = 2（失败）
+1d43c:  bl   VhaDnnTask::GetSubmitKey(w1)   ; 非 1/4 时改走"提交键"路径
+1d44c:  bl   VhaDnnTask::GetId()
+```
+
+**⇒ 判据（务必记住）：库要求响应 `[+2]` 的 u16 ∈ **{1, 4}**。**
+
+**这直接推翻了此前所有"键序列"努力的方向：**
+- `step=2` 得到 `1,3,5` ⇒ 第 2 条起 `[+2]=3/5` **非法**
+- `step=1` 得到 `1,2,3` ⇒ 第 2 条起 `[+2]=2/3` **非法**
+- 只有常量 `1` 或常量 `4` 能通过该校验（而这两者实测**仍然阻塞**）
+
+⇒ **卡点在"该校验通过之后"的环节**，不在键值本身。
+
+**（`GetSubmitKey` 只在"非 1/4"分支被调用 ⇒ 说明还有一条"提交键"路径用于软处理段；
+`SetSubmitKey` 在 `Execute+0x241dc` 被调用，紧接着就调 `GetSlot()` ⇒ 提交键与 slot 是两套并行机制。）**
+
+## 五·补3 ★ 唤醒链路（已定位到函数）
+
+```asm
+; Signal() 通知的正是主线程等待的 condvar (this+0x98)
+165b0: add x0,x19,#0x98 ;  165c0: b d2c0 (notify_all)
+; 调 Signal 的仅两处，都在 VhaDnnTask 内：
+32d2c: bl 16568   ← VhaDnnTask::Finalize() (0x32cc0)
+330a8: bl 16568   ← VhaDnnTask::Done
+; Update (只写 +256，不 notify)：
+1dfc0 / 1ed64
+```
+
+**⇒ 库停住的直接原因：**任务的 `Finalize()` 没被调用**（`Update` 只写状态，不唤醒）。
+⇒ 下一步精确目标：**找 `VhaDnnTask::Finalize()` 的调用者**（无反汇编直接 `bl` ⇒
+经虚表/函数指针间接调用，或由 `libphydnn_execute`/`libphyaiengine` 侧驱动）。**
+
+## 五·补4 给下一轮的明确抓手
 
 用反汇编追"谁唤醒主线程"：
 
