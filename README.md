@@ -14,6 +14,25 @@
 
 ---
 
+## 〇、最新结论（2026-10-12）：transformer 类模型的工具链边界
+
+> 本项目前段（5 个 CNN 模型）已跑通；后段（SenseVoice 等 transformer）撞到**工具链缺陷**，
+> 结论与最小复现见 [`docs/43-toolchain-defects-and-cpu-verdict.md`](docs/43-toolchain-defects-and-cpu-verdict.md)。
+
+| 问题 | 结论 |
+|---|---|
+| transformer 能否上 NPU？ | **当前工具链下不能**，卡点是工具链缺陷，非用法问题 |
+| 坏点 | **attention 的 QK^T/AV**（动态×动态），占真实段 **31.5%** 节点 |
+| 为何绕不过 | `MatMul` 无 NPU 实现 + `Conv` 只能吃**常量权重** ⇒ 动态×动态**数学上无等价实现** |
+| 工具链缺陷 | ① LUT 超越函数固定标度错位（`f(x·2^(E-7))`）；② mapper 不允许改融合区设备归属；③ 定点精度在真实数据下崩 |
+| **工程最优解** | **CPU**：`50.6 ms` / 精度 100%（vs NPU `1472 ms` / 精度 `0.80`）⇒ **CPU 快 29 倍** |
+
+**给厂商的黄金证据**：用**厂商自带 ORT EP**（`PHYNPUExecutionProvider`）加载**原始 ONNX**，
+报出与我们完全相同的 `Interleaving mismatch (join: 64 / output node: 16)`
+⇒ 最小复现无需任何改写，缺陷在厂商侧。
+
+---
+
 ## 一、成果（真机实测）
 
 | 项目 | 结果 |
